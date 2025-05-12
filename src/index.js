@@ -87,17 +87,101 @@ app.get("/", (req, res) => {
   res.send("Exotel POC API is running!");
 });
 
+// Exotel Connect URL endpoint
 app.get("/exotel/call", async (req, res) => {
   try {
-    console.log({
-      reqBody: req.body,
-      reqHeaders: req.headers,
-      reqParams: req.params,
-      reqQuery: req.query,
-      reqUrl: req.url,
-      req,
+    console.log("Exotel Connect Request received:", {
+      query: req.query,
+      headers: req.headers,
     });
+
+    // Extract important parameters from Exotel's request
+    const {
+      CallSid,
+      CallFrom,
+      CallTo,
+      Direction,
+      CallType,
+      DialCallStatus,
+      digits,
+      CustomField,
+    } = req.query;
+
+    // Check the Exotel-Version header
+    const exotelVersion = req.headers["exotel-version"] || "1.0";
+    console.log(`Exotel Version: ${exotelVersion}`);
+
+    // Determine who is who based on direction and numbers
+    let customerNumber, driverNumber;
+
+    // Basic database lookup simulation
+    // In a real app, you would query your database to find the linked customer/driver
+    const getLinkedNumber = (number) => {
+      // This is a simplified example - in production, use a database
+      // to look up the corresponding number
+      const numberMappings = {
+        // Format: 'originatingNumber': 'targetNumber'
+        fromNumber: toNumber, // Driver to Customer
+        toNumber: fromNumber, // Customer to Driver
+      };
+
+      return numberMappings[number] || toNumber; // Fall back to default toNumber if not found
+    };
+
+    if (Direction === "incoming") {
+      // Incoming call to our Exotel number
+      const callerNumber = CallFrom;
+      const targetNumber = getLinkedNumber(callerNumber);
+
+      // Simple logic to determine if caller is customer or driver
+      // In a real app, you would check against your user database
+      if (callerNumber.startsWith("+919") && callerNumber.endsWith("1")) {
+        // If caller is a driver (just an example condition)
+        driverNumber = callerNumber;
+        customerNumber = targetNumber;
+      } else {
+        // If caller is a customer
+        customerNumber = callerNumber;
+        driverNumber = targetNumber;
+      }
+    } else {
+      // Outbound call - determine based on CallFrom/CallTo
+      // The logic here would depend on your specific use case
+      customerNumber = CallTo;
+      driverNumber = getLinkedNumber(CallTo);
+    }
+
+    // Prepare the Exotel Connect response
+    const connectResponse = {
+      fetch_after_attempt: false,
+      destination: {
+        numbers: [driverNumber === CallFrom ? customerNumber : driverNumber],
+      },
+      outgoing_phone_number: callerId, // Using the configured callerId as ExoPhone
+      record: true,
+      recording_channels: "dual",
+      max_ringing_duration: 45,
+      max_conversation_duration: 3600, // 1 hour
+      music_on_hold: {
+        type: "default_tone",
+      },
+      start_call_playback: {
+        playback_to: "both",
+        type: "text",
+        value:
+          Direction === "incoming"
+            ? "Connecting you with your ride. Please wait."
+            : "Connecting you with your customer. Please wait.",
+      },
+    };
+
+    // Set appropriate headers
+    res.setHeader("Content-Type", "application/json");
+    res.status(200).json(connectResponse);
+
+    console.log("Exotel Connect Response:", connectResponse);
   } catch (error) {
+    console.error("Error in Exotel Connect:", error.message);
     res.status(500).json({
       success: false,
       error: error.message,
