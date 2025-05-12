@@ -22,19 +22,31 @@ const toNumber = process.env.TO_NUMBER;
 const serverEndpoint = process.env.SERVER_ENDPOINT;
 
 // Function to make a call using Exotel
-async function makeCall(toNumber) {
+async function makeCall(toNumber, customParams = {}) {
   try {
     const url = `https://${apiKey}:${apiToken}@${subdomain}/v1/Accounts/${exotelSid}/Calls/connect.json`;
 
     const formData = new URLSearchParams();
-
     formData.append("From", fromNumber);
-
     formData.append("To", toNumber);
-
     formData.append("CallerId", callerId);
 
-    console.log("Request data:", {
+    // Add URL parameter if provided
+    // if (customParams.AppUrl) {
+    //   formData.append("Url", customParams.AppUrl);
+    // }
+
+    // Add any custom status callback URL
+    if (customParams.StatusCallback) {
+      formData.append("StatusCallback", customParams.StatusCallback);
+    }
+
+    // Add any custom fields
+    if (customParams.CustomField) {
+      formData.append("CustomField", customParams.CustomField);
+    }
+
+    console.log("Request data for Call : ", {
       url: url.replace(/:[^:]*@/, ":****@"), // Hide token in logs
       formData: Object.fromEntries(formData),
     });
@@ -107,22 +119,16 @@ app.get("/exotel/call", async (req, res) => {
       CustomField,
     } = req.query;
 
-    // Check the Exotel-Version header
     const exotelVersion = req.headers["exotel-version"] || "1.0";
     console.log(`Exotel Version: ${exotelVersion}`);
 
-    // Determine who is who based on direction and numbers
     let customerNumber, driverNumber;
 
-    // Basic database lookup simulation
-    // In a real app, you would query your database to find the linked customer/driver
     const getLinkedNumber = (number) => {
-      // This is a simplified example - in production, use a database
-      // to look up the corresponding number
       const numberMappings = {
         // Format: 'originatingNumber': 'targetNumber'
-        fromNumber: toNumber, // Driver to Customer
-        toNumber: fromNumber, // Customer to Driver
+        [fromNumber]: toNumber, // Driver to Customer
+        [toNumber]: fromNumber, // Customer to Driver
       };
 
       return numberMappings[number] || toNumber; // Fall back to default toNumber if not found
@@ -133,10 +139,7 @@ app.get("/exotel/call", async (req, res) => {
       const callerNumber = CallFrom;
       const targetNumber = getLinkedNumber(callerNumber);
 
-      // Simple logic to determine if caller is customer or driver
-      // In a real app, you would check against your user database
-      if (callerNumber.startsWith("+919") && callerNumber.endsWith("1")) {
-        // If caller is a driver (just an example condition)
+      if (callerNumber === fromNumber) {
         driverNumber = callerNumber;
         customerNumber = targetNumber;
       } else {
@@ -146,7 +149,6 @@ app.get("/exotel/call", async (req, res) => {
       }
     } else {
       // Outbound call - determine based on CallFrom/CallTo
-      // The logic here would depend on your specific use case
       customerNumber = CallTo;
       driverNumber = getLinkedNumber(CallTo);
     }
@@ -199,27 +201,48 @@ app.listen(PORT, () => {
 });
 
 // Example of direct call without API endpoint (uncomment to use)
-// makeCall(toNumber).catch((error) => console.error("Call failed:", error));
 
 async function callOwnService() {
   try {
-    const url = `${serverEndpoint}/exotel/call`; // Correct use of ngrok URL
+    const url = `${serverEndpoint}/exotel/call`;
 
     console.log("Call to own service initiated successfully");
 
+    // Simulate a real Exotel request with all the required parameters
     const response = await axios.get(url, {
       headers: {
         "Content-Type": "application/json",
+        "Exotel-Version": "1.0",
       },
+
       params: {
-        CallFrom: fromNumber,
-        CallTo: toNumber,
-        CallSid: exotelSid,
         CallerId: callerId,
+        From: fromNumber,
+        To: toNumber,
       },
     });
+
     console.log("Response Status:", response.status);
     console.log("Response Data:", response.data);
+
+    // If successful, initiate an actual call using the response
+    if (
+      response.status === 200 &&
+      response.data.destination &&
+      response.data.destination.numbers
+    ) {
+      console.log(
+        "Test successful! Now initiating an actual call using Exotel API..."
+      );
+
+      // Extract the target number from the response
+      const targetNumber = response.data.destination.numbers[0];
+
+      // Make an actual call using the enhanced makeCall function
+      makeCall(targetNumber, {
+        AppUrl: url,
+      });
+    }
   } catch (error) {
     console.error(
       "Error calling own service:",
@@ -231,4 +254,5 @@ async function callOwnService() {
 
 setTimeout(() => {
   callOwnService();
+  // makeCall(toNumber).catch((error) => console.error("Call failed:", error));
 }, 2000); // Call after 2 seconds
