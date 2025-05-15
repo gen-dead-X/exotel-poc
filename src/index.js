@@ -74,23 +74,44 @@ async function makeCall(toNumber, customParams = {}) {
   }
 }
 
-// API endpoint to initiate a call
-app.post("/call", async (req, res) => {
+// Updated /call endpoint to include state management and call recording
+app.get("/call", async (req, res) => {
   try {
-    const { toNumber } = req.body;
+    const { from, to } = req.query;
 
-    if (!toNumber) {
-      return res.status(400).json({ error: "toNumber is required" });
+    console.log({ from, to });
+
+    if (!from || !to) {
+      return res
+        .status(400)
+        .json({ error: "Both 'from' and 'to' numbers are required" });
     }
 
-    const result = await makeCall(toNumber);
-    res.json({ success: true, result });
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      error: error.message,
-      details: error.response?.data,
+    const url = `https://${apiKey}:${apiToken}@${subdomain}/v3/accounts/${exotelSid}/calls`;
+
+    const payload = {
+      from: { contact_uri: from, state_management: true },
+      to: { contact_uri: to },
+      custom_field: "customer_driver_call",
+      max_time_limit: 4000,
+      attempt_time_out: 45,
+      custom_field: "test_call",
+      status_callback: [
+        {
+          event: "terminal",
+          url: `${serverEndpoint}/call-status`,
+        },
+      ],
+    };
+
+    const response = await axios.post(url, payload, {
+      headers: { "Content-Type": "application/json" },
     });
+
+    res.json({ success: true, data: response.data });
+  } catch (error) {
+    console.log(error);
+    res.status(500).json({ success: false, error: error.message });
   }
 });
 
@@ -99,97 +120,94 @@ app.get("/", (req, res) => {
   res.send("Exotel POC API is running!");
 });
 
-// Exotel Connect URL endpoint
+// Updated /exotel/call endpoint to dynamically determine target number
 app.get("/exotel/call", async (req, res) => {
   try {
-    console.log("Exotel Connect Request received:", {
-      query: req.query,
-      headers: req.headers,
-    });
+    const { CallFrom, Direction } = req.query;
 
-    // Extract important parameters from Exotel's request
-    const {
-      CallSid,
-      CallFrom,
-      CallTo,
-      Direction,
-      CallType,
-      DialCallStatus,
-      digits,
-      CustomField,
-    } = req.query;
+    const exotelApiUrl = `https://${apiKey}:${apiToken}@${subdomain}/v3/accounts/<your_sid>/calls`;
 
-    const exotelVersion = req.headers["exotel-version"] || "1.0";
-    console.log(`Exotel Version: ${exotelVersion}`);
+    const customerNumber = fromNumber;
+    const driverNumber = toNumber;
 
-    let customerNumber, driverNumber;
-
-    const getLinkedNumber = (number) => {
-      const numberMappings = {
-        // Format: 'originatingNumber': 'targetNumber'
-        [fromNumber]: toNumber, // Driver to Customer
-        [toNumber]: fromNumber, // Customer to Driver
-      };
-
-      return numberMappings[number] || toNumber; // Fall back to default toNumber if not found
-    };
-
+    let targetNumber;
     if (Direction === "incoming") {
-      // Incoming call to our Exotel number
-      const callerNumber = CallFrom;
-      const targetNumber = getLinkedNumber(callerNumber);
-
-      if (callerNumber === fromNumber) {
-        driverNumber = callerNumber;
-        customerNumber = targetNumber;
-      } else {
-        // If caller is a customer
-        customerNumber = callerNumber;
-        driverNumber = targetNumber;
-      }
+      targetNumber =
+        CallFrom === customerNumber ? driverNumber : customerNumber;
     } else {
-      // Outbound call - determine based on CallFrom/CallTo
-      customerNumber = CallTo;
-      driverNumber = getLinkedNumber(CallTo);
+      targetNumber = customerNumber; // Default for outbound calls
     }
 
-    // Prepare the Exotel Connect response
-    const connectResponse = {
+    res.json({
       fetch_after_attempt: false,
-      destination: {
-        numbers: [driverNumber === CallFrom ? customerNumber : driverNumber],
-      },
-      outgoing_phone_number: callerId, // Using the configured callerId as ExoPhone
+      destination: { numbers: [targetNumber] },
+      outgoing_phone_number: callerId,
       record: true,
       recording_channels: "dual",
       max_ringing_duration: 45,
-      max_conversation_duration: 3600, // 1 hour
-      music_on_hold: {
-        type: "default_tone",
-      },
-      start_call_playback: {
-        playback_to: "both",
-        type: "text",
-        value:
-          Direction === "incoming"
-            ? "Connecting you with your ride. Please wait."
-            : "Connecting you with your customer. Please wait.",
-      },
-    };
-
-    // Set appropriate headers
-    res.setHeader("Content-Type", "application/json");
-    res.status(200).json(connectResponse);
-
-    console.log("Exotel Connect Response:", connectResponse);
-  } catch (error) {
-    console.error("Error in Exotel Connect:", error.message);
-    res.status(500).json({
-      success: false,
-      error: error.message,
-      details: error.response?.data,
+      max_conversation_duration: 3600,
     });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
   }
+});
+
+// API to handle call status updates from Exotel
+app.post("/call-status", async (req, res) => {
+  try {
+    console.log("Call status update received:", req.body);
+
+    // Extract relevant details from the request body
+    const {
+      CallSid,
+      Status,
+      StartTime,
+      EndTime,
+      DialCallDuration,
+      RecordingUrl,
+      CustomField,
+    } = req.body;
+
+    // Log the call details for debugging or storage
+    console.log("Call Details:", {
+      CallSid,
+      Status,
+      StartTime,
+      EndTime,
+      DialCallDuration,
+      RecordingUrl,
+      CustomField,
+    });
+
+    // TODO: Add logic to store or process the call status update
+    // For example, save the details to a database or trigger a notification
+
+    res
+      .status(200)
+      .json({ success: true, message: "Call status processed successfully" });
+  } catch (error) {
+    console.error("Error processing call status:", error.message);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.get("/exotel/dial", async (req, res, next) => {
+  try {
+    console.log({ req, query: req.query });
+
+    res.send(toNumber);
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.use((req, res, error, next) => {
+  console.error("Error:", error);
+  res.status(500).json({ message: "Internal Server Error", success: false });
+});
+
+app.use((req, res, next) => {
+  res.status(404).json({ message: "Internal Server Error", success: false });
 });
 
 // Start the server
@@ -253,6 +271,6 @@ async function callOwnService() {
 }
 
 setTimeout(() => {
-  callOwnService();
+  // callOwnService();
   // makeCall(toNumber).catch((error) => console.error("Call failed:", error));
 }, 2000); // Call after 2 seconds
